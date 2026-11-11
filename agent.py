@@ -25,6 +25,8 @@ def run_agent(question, provider, tools, max_steps=6):
     trace = []
     usage = []
     sources = set()
+    rate_limit_attempts = {}
+    rate_limit_stops = set()
 
     def failed(step, error_type, detail):
         trace.append({'event': 'error', 'step': step, 'error': error_type})
@@ -80,14 +82,37 @@ def run_agent(question, provider, tools, max_steps=6):
                     'message': 'Tool arguments must be a valid JSON object.',
                 }
             else:
-                try:
-                    result = tools.execute(call['name'], arguments)
-                except Exception as exc:
+                target = str(arguments.get('provider', ''))
+                retry_key = (call['name'], target)
+                if retry_key in rate_limit_stops:
                     result = {
                         'ok': False,
-                        'error': type(exc).__name__,
-                        'message': 'Tool execution failed.',
+                        'error': 'RATE_LIMITED',
+                        'retriable': False,
+                        'message': 'Stopped retrying because the rate limit retry budget is exhausted or Retry-After requires waiting.',
                     }
+                else:
+                    try:
+                        result = tools.execute(call['name'], arguments)
+                    except Exception as exc:
+                        result = {
+                            'ok': False,
+                            'error': type(exc).__name__,
+                            'message': 'Tool execution failed.',
+                        }
+
+                if isinstance(result, dict) and result.get('error') == 'RATE_LIMITED':
+                    attempts = rate_limit_attempts.get(retry_key, 0) + 1
+                    rate_limit_attempts[retry_key] = attempts
+                    retry_after = result.get('retry_after', result.get('retry_after_seconds'))
+                    if retry_after not in (None, '', 0, '0') or attempts >= 3:
+                        rate_limit_stops.add(retry_key)
+                        result = dict(result)
+                        result['retriable'] = False
+                        result['message'] = (
+                            result.get('message', 'Rate limited.')
+                            + ' Automatic retries stopped; report this provider as unchecked.'
+                        )
 
             if (call['name'] == 'get_incident_details'
                     and isinstance(result, dict)
@@ -102,10 +127,14 @@ def run_agent(question, provider, tools, max_steps=6):
                 'arguments': arguments,
                 'result': result,
             })
+            observation = result
+            if isinstance(result, dict) and 'distractors' in result:
+                observation = dict(result)
+                observation.pop('distractors')
             messages.append({
                 'role': 'tool',
                 'tool_call_id': call['id'],
-                'content': json.dumps(result, ensure_ascii=False),
+                'content': json.dumps(observation, ensure_ascii=False),
             })
 
         if calls:

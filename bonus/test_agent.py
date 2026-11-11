@@ -51,4 +51,23 @@ class BonusAgentTests(unittest.TestCase):
         self.assertEqual(json.loads(p.histories[1][-1]['content'])['error'],'INVALID_ARGUMENTS')
         self.assertTrue(json.loads(p.histories[2][-1]['content'])['ok'])
 
+    def test_persistent_rate_limit_is_capped_at_three_attempts(self):
+        t=BonusTools(scenario='rate_limit_always')
+        p=ScriptedProvider([call(str(i),'get_vercel_status',{}) for i in range(4)]+[final()])
+        result=run_agent('Kiểm tra',p,t,max_steps=6)
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual(t.calls[('get_vercel_status','vercel')],3)
+        fourth_observation=json.loads(p.histories[4][-1]['content'])
+        self.assertEqual(fourth_observation['error'],'RATE_LIMITED')
+        self.assertFalse(fourth_observation['retriable'])
+
+    def test_noisy_distractors_are_omitted_from_model_context(self):
+        t=BonusTools(scenario='noisy')
+        p=ScriptedProvider([call('a','get_vercel_status',{}),final()])
+        result=run_agent('Kiểm tra',p,t,max_steps=3)
+        self.assertEqual(result['status'],'completed')
+        observation=json.loads(p.histories[1][-1]['content'])
+        self.assertNotIn('distractors',observation)
+        self.assertEqual(len(result['trace'][1]['result']['distractors']),160)
+
 if __name__=='__main__': unittest.main()

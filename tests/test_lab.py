@@ -50,6 +50,17 @@ class ToolsTests(unittest.TestCase):
 
 
 class LoopTests(unittest.TestCase):
+    def test_provider_error_is_reported_without_leaking_key(self):
+        class BrokenProvider:
+            key = 'secret-test-key'
+            def complete(self, messages, schemas):
+                raise RuntimeError('Provider returned HTTP 401 for secret-test-key')
+
+        result = run_agent('kiểm tra', BrokenProvider(), StatusTools())
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('HTTP 401', result['error'])
+        self.assertNotIn('secret-test-key', result['error'])
+
     def test_tool_result_is_returned_with_id(self):
         fake = FakeProvider([tool_call('call-1', 'get_status', '{"provider":"github"}'), final()])
         result = run_agent('kiểm tra', fake, StatusTools())
@@ -125,3 +136,4 @@ class FullTrajectoryTests(unittest.TestCase):
                 self.assertEqual(result['finish'], 'stop')
                 self.assertEqual(post.call_args.args[2]['model'], 'test-model')
                 self.assertIn('chat/completions', post.call_args.args[0])
+                self.assertEqual(post.call_args.args[1]['Authorization'], 'Bearer dummy')
